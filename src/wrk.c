@@ -3,6 +3,7 @@
 #include "wrk.h"
 #include "script.h"
 #include "main.h"
+#include <arpa/inet.h>
 
 static struct config {
     uint64_t connections;
@@ -15,6 +16,7 @@ static struct config {
     bool     latency;
     char    *host;
     char    *script;
+    char    *bindip;
     SSL_CTX *ctx;
 } cfg;
 
@@ -47,6 +49,7 @@ static void usage() {
            "    -c, --connections <N>  Connections to keep open   \n"
            "    -d, --duration    <T>  Duration of test           \n"
            "    -t, --threads     <N>  Number of threads to use   \n"
+           "    -b, --bindip      <S>  Local IP address to use    \n"
            "                                                      \n"
            "    -s, --script      <S>  Load Lua script file       \n"
            "    -H, --header      <H>  Add header to request      \n"
@@ -237,11 +240,22 @@ static int connect_socket(thread *thread, connection *c) {
     struct addrinfo *addr = thread->addr;
     struct aeEventLoop *loop = thread->loop;
     int fd, flags;
+    struct sockaddr_in localaddr;
 
     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
 
     flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    if(cfg.bindip) {
+        memset(&localaddr, '\0', sizeof(localaddr));
+        localaddr.sin_family      = AF_INET;
+        localaddr.sin_addr.s_addr = inet_addr(cfg.bindip); //inet_addr("162.144.61.3");
+        if(bind(fd, (struct sockaddr*)&localaddr, sizeof(localaddr)) < 0) {
+            printf("failed to bind ip: %s\n", inet_ntoa(((struct sockaddr_in*)&localaddr)->sin_addr));
+            goto error;
+        }
+    }
 
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         if (errno != EINPROGRESS) goto error;
@@ -471,6 +485,7 @@ static struct option longopts[] = {
     { "duration",    required_argument, NULL, 'd' },
     { "threads",     required_argument, NULL, 't' },
     { "script",      required_argument, NULL, 's' },
+    { "bindip",      required_argument, NULL, 'b' },
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
     { "timeout",     required_argument, NULL, 'T' },
@@ -489,7 +504,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:s:b:H:T:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -502,6 +517,9 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 break;
             case 's':
                 cfg->script = optarg;
+                break;
+            case 'b':
+                cfg->bindip = optarg;
                 break;
             case 'H':
                 *header++ = optarg;
